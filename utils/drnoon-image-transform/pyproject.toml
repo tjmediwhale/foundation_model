@@ -1,0 +1,5 @@
+[build-system]
+requires = ["setuptools", "wheel", "setuptools_scm"]
+
+[tool.setuptools_scm]
+write_to = "drnoon_image_transform/version.py"
