@@ -5,6 +5,23 @@ accelerate 지원.
 """
 import os
 import sys
+
+# torchrun 분산 실행 시 에러 traceback 캡처용
+try:
+    from torch.distributed.elastic.multiprocessing.errors import record
+except ImportError:
+    def record(fn):
+        return fn
+import warnings
+import logging
+
+warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", message=".*DTensor.*RNG.*", category=DeprecationWarning)
+logging.captureWarnings(True)
+# DTensor RNG 동기화 확인: _random은 WARNING 허용 (동기화 OK면 경고 안 뜸)
+for _name in ("torch", "torch.distributed", "torch.distributed.elastic", "torch.distributed.tensor", "dinov3"):
+    logging.getLogger(_name).setLevel(logging.ERROR)
+logging.getLogger("torch.distributed.tensor._random").setLevel(logging.WARNING)
 import json
 import argparse
 from pathlib import Path
@@ -25,6 +42,7 @@ def parse_args():
     return p.parse_args()
 
 
+@record
 def main():
     args = parse_args()
     import yaml
@@ -83,10 +101,11 @@ def main():
                 cfg["data"].get("image_column", "jpg_h1024_path"),
             )
         summary, ok = run_lp_retfound(
-            run_dir, 0, ckpt, t, v, te, tasks,
-            cfg["data"].get("image_column", "jpg_h1024_path"),
-            cfg.get("lp", {}).get("batch_size", 24),
-            cfg.get("lp", {}).get("epochs", 50),
+            run_dir, 0, ckpt, train_csv, val_csv, test_csv, tasks,
+            image_column=cfg["data"].get("image_column", "jpg_h1024_path"),
+            batch_size=cfg.get("lp", {}).get("batch_size", 24),
+            epochs=cfg.get("lp", {}).get("epochs", 50),
+            num_processes=cfg.get("lp", {}).get("num_processes") or 1,
         )
         print(json.dumps(summary, indent=2))
 

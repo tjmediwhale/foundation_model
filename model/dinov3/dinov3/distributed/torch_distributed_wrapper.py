@@ -132,6 +132,16 @@ class TorchDistributedEnvironment:
             self.world_size = int(os.environ["WORLD_SIZE"])
             self.local_rank = int(os.environ["LOCAL_RANK"])
             self.local_world_size = int(os.environ["LOCAL_WORLD_SIZE"])
+        elif "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+            # accelerate launch, torchrun (env://) 등
+            self.job_id = os.environ.get("TORCHELASTIC_RUN_ID", "env")
+            self.job_type = JobType.TORCHELASTIC
+            self.master_addr = os.environ.get("MASTER_ADDR", "127.0.0.1")
+            self.master_port = int(os.environ.get("MASTER_PORT", "29500"))
+            self.rank = int(os.environ["RANK"])
+            self.world_size = int(os.environ["WORLD_SIZE"])
+            self.local_rank = int(os.environ.get("LOCAL_RANK", self.rank))
+            self.local_world_size = int(os.environ.get("LOCAL_WORLD_SIZE", self.world_size))
         elif "SLURM_JOB_ID" in os.environ:
             # Slurm job created with sbatch, submitit, etc...
             self.job_id = int(os.environ["SLURM_JOB_ID"])
@@ -261,7 +271,9 @@ def enable_distributed(
     if set_cuda_current_device:
         torch.cuda.set_device(torch_env.local_rank)
 
-    dist.init_process_group(backend="nccl", timeout=timeout)
+    # device_id 명시: "Guessing device ID based on global rank" 경고 방지
+    device_id = torch.device("cuda", torch_env.local_rank)
+    dist.init_process_group(backend="nccl", timeout=timeout, device_id=device_id)
     dist.barrier()
 
     if restrict_print_to_main_process:

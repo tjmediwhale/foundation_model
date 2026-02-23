@@ -38,12 +38,14 @@ def _build_fundus_dataloader(
         return aug_fn(img)
 
     dataset = FundusSSLDataset(image_paths, transform=transform)
+    min_samples = batch_size * world_size
+    drop_last = len(dataset) >= min_samples
     sampler = DistributedSampler(
         dataset,
         num_replicas=world_size,
         rank=rank,
         shuffle=True,
-        drop_last=True,
+        drop_last=drop_last,
     )
     sampler.set_epoch(epoch)
     return DataLoader(
@@ -52,7 +54,7 @@ def _build_fundus_dataloader(
         sampler=sampler,
         num_workers=num_workers,
         pin_memory=True,
-        drop_last=True,
+        drop_last=drop_last,
         collate_fn=collate_fn,
     )
 
@@ -148,7 +150,15 @@ def train_one_epoch_dinov3_ssl(
     metric_logger = MetricLogger(delimiter="  ")
     student = model.student
 
-    for batch_idx, data in enumerate(data_loader):
+    from tqdm import tqdm
+    pbar = tqdm(
+        data_loader,
+        total=max_iter_this_epoch,
+        desc=f"Epoch {epoch}",
+        disable=(rank != 0),
+        leave=True,
+    )
+    for batch_idx, data in enumerate(pbar):
         if batch_idx >= max_iter_this_epoch:
             break
         it = epoch * OFFICIAL_EPOCH_LENGTH + batch_idx
@@ -176,6 +186,8 @@ def train_one_epoch_dinov3_ssl(
 
         metric_logger.update(loss=total_loss.item())
         metric_logger.update(lr=lr)
+        if rank == 0:
+            pbar.set_postfix(loss=f"{total_loss.item():.4f}", lr=f"{lr:.2e}")
 
     metric_logger.synchronize_between_processes()
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}

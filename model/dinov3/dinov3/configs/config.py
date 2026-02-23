@@ -162,7 +162,7 @@ def setup_multidistillation(args: DinoV3SetupArgs):
     global logger
     setup_logging(output=args.output_dir, level=logging.INFO)
 
-    fix_random_seeds(seed + rank)
+    fix_random_seeds(seed)
 
     write_config(cfg, args.output_dir)
     apply_scaling_rules_to_cfg(cfg)
@@ -202,8 +202,8 @@ def setup_job(
         )
 
     if seed is not None:
-        rank = distributed.get_rank()
-        fix_random_seeds(seed + rank)
+        # DTensor RNG: 모든 rank에서 동일한 seed 사용 필요 (SPMD semantics)
+        fix_random_seeds(seed)
 
     logger = logging.getLogger("dinov3")
     logger.info("git:\n  {}\n".format(get_sha()))

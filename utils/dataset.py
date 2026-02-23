@@ -34,5 +34,6 @@ class FundusSSLDataset:
         local_path = _to_local_path(path)
         img = Image.open(local_path).convert("RGB")
         if self.transform is not None:
-            return self.transform(img)
-        return img
+            out = self.transform(img)
+            return (out, ())  # collate expects (data_dict, target), target=() for SSL
+        return (img, ())

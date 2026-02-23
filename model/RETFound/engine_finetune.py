@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import matplotlib.pyplot as plt
 from typing import Iterable, Optional
+from tqdm import tqdm
 from timm.data import Mixup
 from timm.utils import accuracy
 from sklearn.metrics import (
@@ -36,10 +37,12 @@ def train_one_epoch(
     print_freq, accum_iter = 20, args.accum_iter
     optimizer.zero_grad()
     
-    if log_writer:
-        print(f'log_dir: {log_writer.log_dir}')
-    
-    for data_iter_step, (samples, targets) in enumerate(metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')):
+
+    use_tqdm = (args is not None and getattr(args, "adaptation", None) == "lp" and misc.is_main_process())
+    n_batches = len(data_loader)
+    iterator = tqdm(data_loader, desc=f"[LP] Epoch [{epoch}]", total=n_batches, disable=not use_tqdm) if use_tqdm else metric_logger.log_every(data_loader, print_freq, f'Epoch: [{epoch}]')
+
+    for data_iter_step, (samples, targets) in enumerate(iterator):
         if data_iter_step % accum_iter == 0:
             lr_sched.adjust_learning_rate(optimizer, data_iter_step / len(data_loader) + epoch, args)
         
@@ -67,6 +70,8 @@ def train_one_epoch(
             max_lr = max(max_lr, group["lr"])
 
         metric_logger.update(lr=max_lr)
+        if use_tqdm and hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(loss=f"{loss_value:.4f}", lr=f"{max_lr:.2e}")
 
         loss_value_reduce = misc.all_reduce_mean(loss_value)
         if log_writer is not None and (data_iter_step + 1) % accum_iter == 0:
@@ -78,7 +83,6 @@ def train_one_epoch(
             log_writer.add_scalar('lr', max_lr, epoch_1000x)
     
     metric_logger.synchronize_between_processes()
-    print("Averaged stats:", metric_logger)
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 @torch.no_grad()
@@ -115,10 +119,18 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     average_precision = average_precision_score(true_onehot, pred_softmax, average='macro')
     kappa = cohen_kappa_score(true_labels, pred_labels)
     f1 = f1_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    roc_auc = roc_auc_score(true_onehot, pred_softmax, multi_class='ovr', average='macro')
+    try:
+        roc_auc = roc_auc_score(true_onehot, pred_softmax, multi_class='ovr', average='macro')
+    except (ValueError, RuntimeError):
+        roc_auc = 0.0
     precision = precision_score(true_onehot, pred_onehot, zero_division=0, average='macro')
     recall = recall_score(true_onehot, pred_onehot, zero_division=0, average='macro')
-    
+
+    # nan 방지: 소수 클래스만 있거나 예측이 한쪽으로 쏠리면 roc_auc/kappa nan
+    if np.isnan(roc_auc):
+        roc_auc = 0.0
+    if np.isnan(kappa):
+        kappa = 0.0
     score = (f1 + roc_auc + kappa) / 3
     if log_writer:
         for metric_name, value in zip(['accuracy', 'f1', 'roc_auc', 'hamming', 'jaccard', 'precision', 'recall', 'average_precision', 'kappa', 'score'],

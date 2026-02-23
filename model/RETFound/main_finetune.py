@@ -14,7 +14,12 @@ import faulthandler
 import numpy as np
 import torch
 import torch.backends.cudnn as cudnn
-from torch.utils.tensorboard import SummaryWriter
+try:
+    from torch.utils.tensorboard import SummaryWriter
+    HAS_TENSORBOARD = True
+except ImportError:
+    SummaryWriter = None
+    HAS_TENSORBOARD = False
 from timm.models.layers import trunc_normal_
 from timm.data.mixup import Mixup
 from huggingface_hub import hf_hub_download, login  # login imported as in original
@@ -26,6 +31,7 @@ import util.misc as misc
 from util.datasets import build_dataset
 from util.pos_embed import interpolate_pos_embed
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
+from tqdm import tqdm
 from engine_finetune import train_one_epoch, evaluate
 
 # =========================
@@ -142,16 +148,13 @@ def main(args, criterion):
     # ---- Optionally load args from resume (when training)
     if args.resume and not args.eval:
         resume_path = args.resume
-        checkpoint = torch.load(args.resume, map_location="cpu")
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         print(f"Load checkpoint (args) from: {args.resume}")
         args = checkpoint["args"]
         args.resume = resume_path
 
     # ---- Distributed setup
     misc.init_distributed_mode(args)
-
-    print(f"job dir: {os.path.dirname(os.path.realpath(__file__))}")
-    print(f"{args}".replace(", ", ",\n"))
 
     device = torch.device(args.device)
 
@@ -178,7 +181,6 @@ def main(args, criterion):
 
     # ---- Load pre-trained weights (if requested and not eval-only)
     if args.finetune and not args.eval:
-        print(f"Preparing to load pre-trained weights: {args.finetune}")
 
         if args.model in ["Dinov3", "Dinov2"]:
             checkpoint_path = args.finetune  # local path
@@ -194,20 +196,41 @@ def main(args, criterion):
                 f"Expected one of: Dinov3, Dinov2, RETFound_dinov2, RETFound_mae"
             )
 
-        checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        print(f"Loaded pre-trained checkpoint from: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
 
         if args.model in ["Dinov3", "Dinov2"]:
-            checkpoint_model = checkpoint
+            # SSL best.pt: {"model": SSLMetaArch.state_dict(), "epoch", "val_loss"}
+            # SSLMetaArch keys: student.backbone.xxx 또는 _fsdp_wrapped_module.student.backbone.xxx
+            if "model" in checkpoint:
+                raw = checkpoint["model"]
+                checkpoint_model = {}
+                for k, v in raw.items():
+                    for prefix in ("student.backbone.", "_fsdp_wrapped_module.student.backbone."):
+                        if k.startswith(prefix):
+                            checkpoint_model[k[len(prefix):]] = v
+                            break
+                if not checkpoint_model:
+                    raise ValueError(
+                        f"Checkpoint has 'model' key but no student.backbone.* keys. "
+                        f"Sample keys: {list(raw.keys())[:8]}"
+                    )
+            else:
+                checkpoint_model = checkpoint
         elif args.model == "RETFound_dinov2":
             checkpoint_model = checkpoint["teacher"]
         else:  # RETFound_mae
             checkpoint_model = checkpoint["model"]
 
-        # -- Key hygiene
+        # -- Key hygiene (backbone. prefix는 이미 제거됐을 수 있음)
         checkpoint_model = {k.replace("backbone.", ""): v for k, v in checkpoint_model.items()}
         checkpoint_model = {k.replace("mlp.w12.", "mlp.fc1."): v for k, v in checkpoint_model.items()}
         checkpoint_model = {k.replace("mlp.w3.", "mlp.fc2."): v for k, v in checkpoint_model.items()}
+
+        # FSDP DTensor → plain Tensor (기존 best.pt 호환)
+        def _to_plain(t):
+            return t.full_tensor() if hasattr(t, "full_tensor") else t
+
+        checkpoint_model = {k: _to_plain(v) for k, v in checkpoint_model.items()}
 
         # -- Remove classifier if shape mismatched
         state_dict = model.state_dict()
@@ -231,6 +254,10 @@ def main(args, criterion):
     dataset_val   = build_dataset(is_train="val",   args=args)
     dataset_test  = build_dataset(is_train="test",  args=args)
 
+    if len(dataset_train) == 0:
+        print(f"[LP] task={args.task}: train_set 비어 있음. LP 스킵.")
+        return
+
     num_tasks   = misc.get_world_size()
     global_rank = misc.get_rank()
 
@@ -238,10 +265,9 @@ def main(args, criterion):
         sampler_train = torch.utils.data.DistributedSampler(
             dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
-        print(f"Sampler_train = {sampler_train}")
         if args.dist_eval:
             if len(dataset_val) % num_tasks != 0:
-                print("Warning: dist eval with dataset not divisible by #procs; results may differ slightly.")
+                pass  # dist eval: dataset not divisible by #procs
             sampler_val = torch.utils.data.DistributedSampler(
                 dataset_val, num_replicas=num_tasks, rank=global_rank, shuffle=True
             )
@@ -250,7 +276,7 @@ def main(args, criterion):
 
     if args.dist_eval:
         if len(dataset_test) % num_tasks != 0:
-            print("Warning: dist eval test set not divisible by #procs; results may differ slightly.")
+            pass  # dist eval: test set not divisible by #procs
         sampler_test = torch.utils.data.DistributedSampler(
             dataset_test, num_replicas=num_tasks, rank=global_rank, shuffle=True
         )
@@ -258,7 +284,7 @@ def main(args, criterion):
         sampler_test = torch.utils.data.SequentialSampler(dataset_test)
 
     # ---- Logging
-    if global_rank == 0 and args.log_dir is not None and not args.eval:
+    if global_rank == 0 and args.log_dir is not None and not args.eval and HAS_TENSORBOARD:
         os.makedirs(args.log_dir, exist_ok=True)
         log_writer = SummaryWriter(log_dir=os.path.join(args.log_dir, args.task))
     else:
@@ -271,7 +297,6 @@ def main(args, criterion):
             batch_size=args.batch_size, num_workers=args.num_workers,
             pin_memory=args.pin_mem, drop_last=True,
         )
-        print(f"len of train_set: {len(data_loader_train) * args.batch_size}")
 
         data_loader_val = torch.utils.data.DataLoader(
             dataset_val, sampler=sampler_val,
@@ -298,7 +323,7 @@ def main(args, criterion):
 
     # ---- Eval-only: resume weights
     if args.resume and args.eval:
-        checkpoint = torch.load(args.resume, map_location="cpu")
+        checkpoint = torch.load(args.resume, map_location="cpu", weights_only=False)
         print(f"Load checkpoint for eval from: {args.resume}")
         model.load_state_dict(checkpoint["model"])
 
@@ -309,9 +334,8 @@ def main(args, criterion):
     if args.adaptation == "lp":
         for name, param in model.named_parameters():
             param.requires_grad = ("head" in name)
-        print("[Adaptation] Linear probe: training classifier head only.")
     else:
-        print("[Adaptation] Full fine-tuning: training all parameters.")
+        pass  # Full fine-tuning: all params trainable
 
     # ---- Count trainable params
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -321,16 +345,11 @@ def main(args, criterion):
     eff_batch_size = args.batch_size * args.accum_iter * misc.get_world_size()
     if args.lr is None:
         args.lr = args.blr * eff_batch_size / 256
-    print(f"base lr: {args.lr * 256 / eff_batch_size:.2e}")
-    print(f"actual lr: {args.lr:.2e}")
-    print(f"accumulate grad iterations: {args.accum_iter}")
-    print(f"effective batch size: {eff_batch_size}")
 
     # ---- DDP (if available)
     if args.distributed and torch.cuda.device_count() > 1:
         ddp_kwargs = {}
-        if args.adaptation == "lp":
-            ddp_kwargs["find_unused_parameters"] = True
+        # LP: backbone frozen이지만 forward에서 모두 사용됨 → find_unused_parameters 불필요
         model = torch.nn.parallel.DistributedDataParallel(
             model, device_ids=[args.gpu], **ddp_kwargs
         )
@@ -354,7 +373,6 @@ def main(args, criterion):
 
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr)
     loss_scaler = NativeScaler()
-    print(f"criterion = {criterion}")
 
     # ---- Load previous full state (optimizer, scaler, etc.)
     misc.load_model(args=args, model_without_ddp=model_without_ddp,
@@ -370,17 +388,22 @@ def main(args, criterion):
             data_loader_test, model, device, args, epoch=0, mode="test",
             num_class=args.nb_classes, log_writer=log_writer
         )
+        if torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
         return
 
     # =========================
     # Train Loop
     # =========================
-    print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_score = 0.0
     best_epoch = 0
 
-    for epoch in range(args.start_epoch, args.epochs):
+    epoch_range = range(args.start_epoch, args.epochs)
+    use_epoch_tqdm = (args.adaptation == "lp" and misc.is_main_process())
+    epoch_iter = tqdm(epoch_range, desc=f"[LP] task={args.task} epochs", unit="epoch", disable=not use_epoch_tqdm)
+
+    for epoch in epoch_iter:
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
 
@@ -396,7 +419,8 @@ def main(args, criterion):
             num_class=args.nb_classes, log_writer=log_writer
         )
 
-        if max_score < val_score:
+        is_valid_score = not (val_score != val_score)  # nan 체크
+        if is_valid_score and max_score < val_score:
             max_score = val_score
             best_epoch = epoch
             if args.output_dir and args.savemodel:
@@ -404,6 +428,11 @@ def main(args, criterion):
                     args=args, model=model, model_without_ddp=model_without_ddp,
                     optimizer=optimizer, loss_scaler=loss_scaler, epoch=epoch, mode="best"
                 )
+                if misc.is_main_process():
+                    with open(os.path.join(args.output_dir, args.task, "best_score.json"), "w") as f:
+                        json.dump({"score": float(max_score), "epoch": int(best_epoch)}, f)
+        if use_epoch_tqdm and hasattr(epoch_iter, "set_postfix"):
+            epoch_iter.set_postfix(best_score=f"{max_score:.4f}", val_loss=f"{val_stats['loss']:.4f}")
         print(f"Best epoch = {best_epoch}, Best score = {max_score:.4f}")
 
         if log_writer is not None:
@@ -422,10 +451,14 @@ def main(args, criterion):
     # Final Test (Best Ckpt)
     # =========================
     ckpt_path = os.path.join(args.output_dir, args.task, "checkpoint-best.pth")
-    checkpoint = torch.load(ckpt_path, map_location="cpu")
-    model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
-    model.to(device)
-    print(f"Test with the best model, epoch = {checkpoint.get('epoch', -1)}:")
+    if os.path.isfile(ckpt_path):
+        checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        model_without_ddp.load_state_dict(checkpoint["model"], strict=False)
+        model.to(device)
+        print(f"Test with the best model, epoch = {checkpoint.get('epoch', -1)}:")
+    else:
+        # val_score가 nan이면 checkpoint 미저장됨 → 현재 모델로 test
+        print(f"checkpoint-best.pth 없음 (val_score nan 등). 현재 모델로 test:")
     _test_stats, _auc_roc = evaluate(
         data_loader_test, model, device, args, -1, mode="test",
         num_class=args.nb_classes, log_writer=None
@@ -435,8 +468,13 @@ def main(args, criterion):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print(f"Training time {total_time_str}")
 
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
+
 
 if __name__ == "__main__":
+    import traceback
+    import sys
     args = get_args_parser()
     args = args.parse_args()
 
@@ -445,4 +483,13 @@ if __name__ == "__main__":
     if args.output_dir:
         Path(args.output_dir).mkdir(parents=True, exist_ok=True)
 
-    main(args, criterion)
+    try:
+        main(args, criterion)
+    except Exception:
+        tb_str = traceback.format_exc()
+        print(tb_str, file=sys.stderr, flush=True)
+        err_file = os.environ.get("TORCH_ELASTIC_ERROR_FILE")
+        if err_file:
+            with open(err_file, "w") as f:
+                f.write(tb_str)
+        raise

@@ -274,7 +274,14 @@ def init_fsdp_model_from_checkpoint(
 ):
     if not Path(checkpoint_path).is_dir():  # PyTorch standard checkpoint
         logger.info(f"Loading pretrained weights from {checkpoint_path}")
-        chkpt = torch.load(checkpoint_path, map_location="cpu")["teacher"]
+        raw = torch.load(checkpoint_path, map_location="cpu")
+        # Full SSL checkpoint: {"teacher": {...}} vs backbone-only: {"patch_embed...", "blocks...", ...}
+        if "teacher" in raw:
+            chkpt = raw["teacher"]
+        else:
+            # Backbone-only pretrained (e.g. jaychempan/dinov3 .pth) → add "backbone." prefix
+            chkpt = {"backbone." + k: v for k, v in raw.items()}
+            logger.info("Backbone-only checkpoint detected, loading into backbone")
         from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
 
         if process_group is None:
@@ -298,7 +305,8 @@ def init_fsdp_model_from_checkpoint(
                 key: tensor
                 for key, tensor in chkpt.items()
                 if not any(skip_load_key in key for skip_load_key in skip_load_keys)
-            }
+            },
+            strict=False,
         )
     else:  # DCP checkpoint
         load_checkpoint(ckpt_dir=checkpoint_path, model=model, process_group=process_group)

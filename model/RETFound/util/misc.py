@@ -48,25 +48,29 @@ class SmoothedValue(object):
 
     @property
     def median(self):
+        if len(self.deque) == 0:
+            return 0.0
         d = torch.tensor(list(self.deque))
         return d.median().item()
 
     @property
     def avg(self):
+        if len(self.deque) == 0:
+            return 0.0
         d = torch.tensor(list(self.deque), dtype=torch.float32)
         return d.mean().item()
 
     @property
     def global_avg(self):
-        return self.total / self.count
+        return self.total / self.count if self.count > 0 else 0.0
 
     @property
     def max(self):
-        return max(self.deque)
+        return max(self.deque) if len(self.deque) > 0 else 0.0
 
     @property
     def value(self):
-        return self.deque[-1]
+        return self.deque[-1] if len(self.deque) > 0 else 0.0
 
     def __str__(self):
         return self.fmt.format(
@@ -157,8 +161,9 @@ class MetricLogger(object):
             end = time.time()
         total_time = time.time() - start_time
         total_time_str = str(datetime.timedelta(seconds=int(total_time)))
+        n = max(len(iterable), 1)  # 분산 시 일부 rank에 데이터 0개 → ZeroDivisionError 방지
         print('{} Total time: {} ({:.4f} s / it)'.format(
-            header, total_time_str, total_time / len(iterable)))
+            header, total_time_str, total_time / n))
 
 
 def setup_for_distributed(is_master):
@@ -234,10 +239,13 @@ def init_distributed_mode(args):
 
     torch.cuda.set_device(args.gpu)
     args.dist_backend = 'nccl'
-    print('| distributed init (rank {}): {}, gpu {}'.format(
-        args.rank, args.dist_url, args.gpu), flush=True)
-    torch.distributed.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
-                                         world_size=args.world_size, rank=args.rank)
+    torch.distributed.init_process_group(
+        backend=args.dist_backend,
+        init_method=args.dist_url,
+        world_size=args.world_size,
+        rank=args.rank,
+        device_id=args.gpu,
+    )
     torch.distributed.barrier()
     setup_for_distributed(args.rank == 0)
 
@@ -343,7 +351,7 @@ def load_model(args, model_without_ddp, optimizer, loss_scaler):
             checkpoint = torch.hub.load_state_dict_from_url(
                 args.resume, map_location='cpu', check_hash=True)
         else:
-            checkpoint = torch.load(args.resume, map_location='cpu')
+            checkpoint = torch.load(args.resume, map_location='cpu', weights_only=False)
         if 'model' in checkpoint:
             checkpoint_model = checkpoint['model']
         else:

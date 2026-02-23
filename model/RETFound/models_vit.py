@@ -88,12 +88,15 @@ def RETFound_dinov2(args, **kwargs):
 
 def Dinov3(args, **kwargs):
     # Load ViT-L/16 backbone (hub model has `head = Identity` by default)
-    model = torch.hub.load(
-        repo_or_dir="facebookresearch/dinov3",
-        model=args.model_arch,
-        pretrained=False,   # main() will load your checkpoint
-        trust_repo=True,
-    )
+    import contextlib
+    import io
+    with contextlib.redirect_stderr(io.StringIO()):  # torch.hub "Using cache" 억제
+        model = torch.hub.load(
+            repo_or_dir="facebookresearch/dinov3",
+            model=args.model_arch,
+            pretrained=False,   # main() will load your checkpoint
+            trust_repo=True,
+        )
 
     # Figure out feature dimension for the probe
     feat_dim = getattr(model, "embed_dim", None) or getattr(model, "num_features", None)
