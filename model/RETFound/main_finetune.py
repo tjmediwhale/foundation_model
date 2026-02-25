@@ -99,6 +99,10 @@ def get_args_parser():
 
     # ---- Dataset & paths
     parser.add_argument("--data_path", default="./data/", type=str)
+    parser.add_argument("--use_drnoon_preprocess", action="store_true",
+                        help="Apply drnoon-image-transform preprocessing (retinal crop) before augmentation")
+    parser.add_argument("--drnoon_precrop", type=float, default=0.4)
+    parser.add_argument("--drnoon_circle_mask", type=lambda x: str(x).lower() in ("true", "1", "yes"), default=True)
     parser.add_argument("--nb_classes", default=8, type=int)
     parser.add_argument("--output_dir", default="./output_dir")
     parser.add_argument("--log_dir", default="./output_logs")

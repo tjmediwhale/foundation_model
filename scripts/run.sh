@@ -6,7 +6,7 @@ export PYTHONWARNINGS="ignore"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 CONFIG="${1:-scripts/configs/default.yaml}"
-RUN_NAME="${2:-dinov3_vitl16_finetune_1st}"
+RUN_NAME="${2:-dinov3_vitb16_finetune_1st}"
 MODE="${3:-train_dinov3_ssl_then_lp}"
 
 cd "$PROJECT_ROOT"

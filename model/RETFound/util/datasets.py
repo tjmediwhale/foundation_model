@@ -1,9 +1,27 @@
 import os
+import sys
+from pathlib import Path
+
 import torch
 from torch.utils.data import Subset
 from torchvision import datasets, transforms
 from timm.data import create_transform
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
+
+
+def _get_fundus_preprocess_fn(args):
+    """drnoon-image-transform 전처리 (retinal crop). foundation_model utils 사용."""
+    if not getattr(args, "use_drnoon_preprocess", False):
+        return None
+    _fm = Path(__file__).resolve().parent.parent.parent.parent  # util->RETFound->model->foundation_model
+    if str(_fm) not in sys.path:
+        sys.path.insert(0, str(_fm))
+    from utils.preprocessing import get_fundus_preprocess_fn
+    return get_fundus_preprocess_fn(
+        precrop=getattr(args, "drnoon_precrop", 0.4),
+        circle_mask=getattr(args, "drnoon_circle_mask", True),
+    )
+
 
 def build_dataset(is_train, args):
     transform = build_transform(is_train, args)
@@ -31,9 +49,10 @@ def build_dataset(is_train, args):
 def build_transform(is_train, args):
     mean = IMAGENET_DEFAULT_MEAN
     std = IMAGENET_DEFAULT_STD
+    preprocess_fn = _get_fundus_preprocess_fn(args)
 
     if is_train == 'train':
-        return create_transform(
+        base_transform = create_transform(
             input_size=args.input_size,
             is_training=True,
             color_jitter=args.color_jitter,
@@ -45,6 +64,12 @@ def build_transform(is_train, args):
             mean=mean,
             std=std,
         )
+        if preprocess_fn is not None:
+            def _compose_train(img):
+                img = preprocess_fn(img)
+                return base_transform(img)
+            return _compose_train
+        return base_transform
 
     # eval transform
     crop_pct = 224 / 256 if args.input_size <= 224 else 1.0
@@ -55,7 +80,13 @@ def build_transform(is_train, args):
         transforms.ToTensor(),
         transforms.Normalize(mean, std),
     ]
-    return transforms.Compose(t)
+    base = transforms.Compose(t)
+    if preprocess_fn is not None:
+        def _compose_eval(img):
+            img = preprocess_fn(img)
+            return base(img)
+        return _compose_eval
+    return base
 
 # ---- helpers ----
 

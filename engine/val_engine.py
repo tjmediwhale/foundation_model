@@ -20,6 +20,7 @@ def run_validation_dinov3_ssl(
     model,
     image_paths: list,
     epoch: int,
+    preprocess_fn=None,
 ) -> float:
     """
     DINOv3 SSL validation loss 계산.
@@ -69,7 +70,12 @@ def run_validation_dinov3_ssl(
         random_circular_shift=cfg.ibot.mask_random_circular_shift,
     )
 
-    dataset = FundusSSLDataset(image_paths, transform=aug)
+    def transform(img):
+        if preprocess_fn is not None:
+            img = preprocess_fn(img)
+        return aug(img)
+
+    dataset = FundusSSLDataset(image_paths, transform=transform)
     sampler = DistributedSampler(
         dataset,
         num_replicas=world_size,

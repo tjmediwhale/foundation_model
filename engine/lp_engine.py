@@ -47,6 +47,9 @@ def run_lp_retfound(
     model: str = "Dinov3",
     model_arch: str = "dinov3_vitl16",
     num_processes: int = 1,
+    use_drnoon_preprocess: bool = True,
+    drnoon_precrop: float = 0.4,
+    drnoon_circle_mask: bool = True,
 ) -> Tuple[Dict, bool]:
     """
     태스크별 LP 실행. ImageFolder 생성 후 RETFound main_finetune 서브프로세스 호출.
@@ -96,6 +99,12 @@ def run_lp_retfound(
             "--output_dir", out_dir_root,
             "--task", task,
         ]
+        if use_drnoon_preprocess:
+            base_args.extend([
+                "--use_drnoon_preprocess",
+                "--drnoon_precrop", str(drnoon_precrop),
+                "--drnoon_circle_mask", str(drnoon_circle_mask),
+            ])
         if num_processes > 1:
             base_args.append("--dist_eval")
         main_script = str(RETFOUND_DIR / "main_finetune.py")

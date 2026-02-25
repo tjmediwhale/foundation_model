@@ -30,11 +30,16 @@ def _build_fundus_dataloader(
     rank: int,
     world_size: int,
     epoch: int,
+    preprocess_fn=None,
 ) -> DataLoader:
-    """Fundus 이미지 경로로 DINOv3 SSL용 DataLoader 생성."""
+    """Fundus 이미지 경로로 DINOv3 SSL용 DataLoader 생성.
+    preprocess_fn: augmentation 전 drnoon 전처리 (retinal crop). None이면 스킵.
+    """
     from utils.dataset import FundusSSLDataset
 
     def transform(img):
+        if preprocess_fn is not None:
+            img = preprocess_fn(img)
         return aug_fn(img)
 
     dataset = FundusSSLDataset(image_paths, transform=transform)
@@ -65,6 +70,7 @@ def train_one_epoch_dinov3_ssl(
     image_paths: list,
     epoch: int,
     accelerator=None,
+    preprocess_fn=None,
 ) -> dict:
     """
     DINOv3 SSL 1 epoch 학습.
@@ -131,6 +137,7 @@ def train_one_epoch_dinov3_ssl(
         rank=rank,
         world_size=world_size,
         epoch=epoch,
+        preprocess_fn=preprocess_fn,
     )
 
     optimizer = build_optimizer(cfg, model.get_params_groups())

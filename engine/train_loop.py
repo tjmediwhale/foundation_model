@@ -158,6 +158,19 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
             f"gs:// -> {local_prefix} 치환 후 파일이 존재해야 합니다."
         )
 
+    # drnoon-image-transform 전처리 (retinal crop). augmentation 전에 적용.
+    preproc_cfg = cfg.get("data", {}).get("preprocessing", {})
+    use_drnoon_preprocess = preproc_cfg.get("use_drnoon_preprocess", True)
+    preprocess_fn = None
+    if use_drnoon_preprocess:
+        from utils.preprocessing import get_fundus_preprocess_fn
+        preprocess_fn = get_fundus_preprocess_fn(
+            precrop=preproc_cfg.get("drnoon_precrop", 0.4),
+            circle_mask=preproc_cfg.get("drnoon_circle_mask", True),
+        )
+        if rank == 0:
+            print(f"[Data] drnoon 전처리: precrop={preproc_cfg.get('drnoon_precrop', 0.4)}, circle_mask={preproc_cfg.get('drnoon_circle_mask', True)}")
+
     lp_cfg = cfg.get("lp", {})
     lp_warmup = lp_cfg.get("lp_warmup_epochs", 5)
     min_val_delta = lp_cfg.get("min_val_loss_delta", 0.001)
@@ -177,8 +190,8 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
 
     try:
         for epoch in range(epochs):
-            train_metrics = train_one_epoch_dinov3_ssl(dinov3_cfg, model, train_paths, epoch)
-            val_loss = run_validation_dinov3_ssl(dinov3_cfg, model, val_paths, epoch)
+            train_metrics = train_one_epoch_dinov3_ssl(dinov3_cfg, model, train_paths, epoch, preprocess_fn=preprocess_fn)
+            val_loss = run_validation_dinov3_ssl(dinov3_cfg, model, val_paths, epoch, preprocess_fn=preprocess_fn)
 
             if rank == 0:
                 print(f"Epoch {epoch} train_loss={train_metrics.get('loss', 0):.4f} val_loss={val_loss:.4f}")
@@ -250,6 +263,9 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
                 model="Dinov3",
                 model_arch=lp_cfg.get("model_arch", "dinov3_vitl16"),
                 num_processes=num_proc,
+                use_drnoon_preprocess=use_drnoon_preprocess,
+                drnoon_precrop=preproc_cfg.get("drnoon_precrop", 0.4),
+                drnoon_circle_mask=preproc_cfg.get("drnoon_circle_mask", True),
             )
             if mlflow_active and lp_summary:
                 try:
