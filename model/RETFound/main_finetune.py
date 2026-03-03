@@ -189,11 +189,25 @@ def main(args, criterion):
         if args.model in ["Dinov3", "Dinov2"]:
             checkpoint_path = args.finetune  # local path
         elif args.model in ["RETFound_dinov2", "RETFound_mae"]:
-            print(f"Downloading pre-trained weights from Hugging Face Hub: {args.finetune}")
-            checkpoint_path = hf_hub_download(
-                repo_id=f"YukunZhou/{args.finetune}",
-                filename=f"{args.finetune}.pth",
-            )
+            # 로컬 경로인지 확인 (절대 경로 또는 .pth로 끝나는 경우)
+            if os.path.exists(args.finetune) or args.finetune.endswith('.pth'):
+                checkpoint_path = args.finetune
+                print(f"Using local checkpoint: {checkpoint_path}")
+            else:
+                # HuggingFace에서 다운로드 시도
+                print(f"Downloading pre-trained weights from Hugging Face Hub: {args.finetune}")
+                try:
+                    checkpoint_path = hf_hub_download(
+                        repo_id=f"YukunZhou/{args.finetune}",
+                        filename=f"{args.finetune}.pth",
+                    )
+                except Exception as e:
+                    print(f"Failed to download from HuggingFace: {e}")
+                    print(f"Please either:")
+                    print(f"  1. Login to HuggingFace: huggingface-cli login")
+                    print(f"  2. Request access at: https://huggingface.co/YukunZhou/{args.finetune}")
+                    print(f"  3. Download manually and specify local path in config")
+                    raise
         else:
             raise ValueError(
                 f"Unsupported model '{args.model}'. "
@@ -404,7 +418,7 @@ def main(args, criterion):
     best_epoch = 0
 
     epoch_range = range(args.start_epoch, args.epochs)
-    use_epoch_tqdm = (args.adaptation == "lp" and misc.is_main_process())
+    use_epoch_tqdm = False  # 배치 단위 pbar만 표시
     epoch_iter = tqdm(epoch_range, desc=f"[LP] task={args.task} epochs", unit="epoch", disable=not use_epoch_tqdm)
 
     for epoch in epoch_iter:
@@ -427,6 +441,9 @@ def main(args, criterion):
         if is_valid_score and max_score < val_score:
             max_score = val_score
             best_epoch = epoch
+            best_f1 = val_stats.get("f1", 0.0)
+            best_roc_auc = val_stats.get("roc_auc", 0.0)
+            best_kappa = val_stats.get("kappa", 0.0)
             if args.output_dir and args.savemodel:
                 misc.save_model(
                     args=args, model=model, model_without_ddp=model_without_ddp,
@@ -434,7 +451,13 @@ def main(args, criterion):
                 )
                 if misc.is_main_process():
                     with open(os.path.join(args.output_dir, args.task, "best_score.json"), "w") as f:
-                        json.dump({"score": float(max_score), "epoch": int(best_epoch)}, f)
+                        json.dump({
+                            "score": float(max_score),
+                            "epoch": int(best_epoch),
+                            "f1": float(best_f1),
+                            "roc_auc": float(best_roc_auc),
+                            "kappa": float(best_kappa)
+                        }, f, indent=2)
         if use_epoch_tqdm and hasattr(epoch_iter, "set_postfix"):
             epoch_iter.set_postfix(best_score=f"{max_score:.4f}", val_loss=f"{val_stats['loss']:.4f}")
         print(f"Best epoch = {best_epoch}, Best score = {max_score:.4f}")

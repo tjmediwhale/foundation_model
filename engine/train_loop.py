@@ -187,6 +187,13 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
     lp_warmup = min(lp_warmup, max(0, epochs - 1))
     ckpt_dir = os.path.join(run_dir, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
+    
+    # Early stopping 설정
+    early_stop_cfg = cfg.get("training", {}).get("early_stopping", {})
+    early_stop_enabled = early_stop_cfg.get("enabled", False)
+    early_stop_patience = early_stop_cfg.get("patience", 10)
+    early_stop_min_delta = early_stop_cfg.get("min_delta", 0.001)
+    early_stop_counter = 0
 
     try:
         for epoch in range(epochs):
@@ -205,24 +212,35 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
             if epoch < lp_warmup:
                 continue
 
-            if val_loss < best_val_loss or epoch == epochs - 1:
-                # FSDP DTensor → plain Tensor 변환 (LP에서 load 시 mixed Tensor/DTensor 에러 방지)
-                state_dict = model.state_dict()
-                state_dict_plain = {}
-                for k, v in state_dict.items():
-                    if hasattr(v, "full_tensor"):
-                        state_dict_plain[k] = v.full_tensor()
-                    else:
-                        state_dict_plain[k] = v
+            # FSDP DTensor → plain Tensor 변환 (LP에서 load 시 mixed Tensor/DTensor 에러 방지)
+            # 항상 state_dict를 추출 (early stopping이나 마지막 epoch에서도 필요)
+            state_dict = model.state_dict()
+            state_dict_plain = {}
+            for k, v in state_dict.items():
+                if hasattr(v, "full_tensor"):
+                    state_dict_plain[k] = v.full_tensor()
+                else:
+                    state_dict_plain[k] = v
 
             if val_loss < best_val_loss:
                 delta = best_val_loss - val_loss
                 best_val_loss = val_loss
                 improvement_count += 1
+                early_stop_counter = 0  # 개선되면 카운터 리셋
                 if rank == 0:
                     ckpt_path = os.path.join(ckpt_dir, "best.pt")
                     torch.save({"model": state_dict_plain, "epoch": epoch, "val_loss": val_loss}, ckpt_path)
                 # LP는 SSL 중간에 실행 시 GPU 충돌 → SSL 완료 후에만 8 GPU로 실행
+            elif early_stop_enabled and epoch >= lp_warmup:
+                # Early stopping: validation loss가 개선되지 않으면 카운터 증가
+                if val_loss >= best_val_loss - early_stop_min_delta:
+                    early_stop_counter += 1
+                    if rank == 0:
+                        print(f"[Early Stopping] No improvement for {early_stop_counter}/{early_stop_patience} epochs (best_val_loss={best_val_loss:.4f}, current={val_loss:.4f})")
+                    if early_stop_counter >= early_stop_patience:
+                        if rank == 0:
+                            print(f"[Early Stopping] Stopping training early at epoch {epoch} (best_val_loss={best_val_loss:.4f})")
+                        break
 
             if epoch == epochs - 1 and rank == 0:
                 ckpt_path = os.path.join(ckpt_dir, "last.pt")
@@ -266,6 +284,7 @@ def run_train_dinov3_ssl_then_lp(cfg: dict, run_dir: str, args):
                 use_drnoon_preprocess=use_drnoon_preprocess,
                 drnoon_precrop=preproc_cfg.get("drnoon_precrop", 0.4),
                 drnoon_circle_mask=preproc_cfg.get("drnoon_circle_mask", True),
+                gpu_id=lp_cfg.get("gpu_id"),
             )
             if mlflow_active and lp_summary:
                 try:

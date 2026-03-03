@@ -22,8 +22,30 @@ def load_csv_with_path_replace(
     image_column: str = "jpg_h1024_path",
     local_prefix: Optional[str] = None,
 ) -> pd.DataFrame:
-    """CSV 로드 후 image_column 경로 치환."""
-    df = pd.read_csv(csv_path)
+    """CSV 로드 후 image_column 경로 치환. DINOv3와 동일한 방식 사용."""
+    # DINOv3에서 사용하는 기본 방식: 간단하게 pd.read_csv만 사용
+    # 파싱 에러가 발생하면 python engine으로 재시도
+    try:
+        df = pd.read_csv(csv_path)
+    except (pd.errors.ParserError, UnicodeDecodeError) as e:
+        # 파싱 에러나 인코딩 에러 시 python engine으로 재시도
+        try:
+            df = pd.read_csv(csv_path, engine='python')
+        except UnicodeDecodeError:
+            # 인코딩 에러 시 여러 인코딩 시도
+            for encoding in ["cp949", "utf-8", "latin-1"]:
+                try:
+                    df = pd.read_csv(csv_path, engine='python', encoding=encoding)
+                    break
+                except Exception:
+                    continue
+            else:
+                raise RuntimeError(f"CSV 파일 인코딩을 확인할 수 없습니다: {csv_path}")
+        except Exception as e2:
+            raise RuntimeError(f"CSV 파일을 읽을 수 없습니다: {csv_path}. 원래 에러: {e}, 재시도 에러: {e2}")
+    except Exception as e:
+        raise RuntimeError(f"CSV 파일을 읽을 수 없습니다: {csv_path}. 에러: {e}")
+    
     if image_column in df.columns:
         p = local_prefix or _DEFAULT_LOCAL_PREFIX
         df[image_column] = df[image_column].astype(str).apply(lambda x: replace_gs_path(x, p))
@@ -74,8 +96,7 @@ def build_imagefolder_from_csv(
         return 0
 
     split_dir = os.path.join(output_root, split)
-    if os.path.exists(split_dir):
-        shutil.rmtree(split_dir)
+    # 디렉토리 삭제하지 않음: 이미 존재하는 파일은 건너뛰므로 기존 디렉토리 재사용
     os.makedirs(split_dir, exist_ok=True)
 
     n_created = 0

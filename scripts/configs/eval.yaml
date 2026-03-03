@@ -1,0 +1,65 @@
+# foundation_model 기본 설정
+
+data:
+  train_csv: "/home/tj/Research/foundation_model/dataset/DrNoon_CVD_v6_all_fundus_20260212_train.csv"
+  val_csv: "/home/tj/Research/foundation_model/dataset/DrNoon_CVD_v6_all_fundus_20260212_val.csv"
+  test_csv: "/home/tj/Research/foundation_model/dataset/DrNoon_CVD_v6_all_fundus_20260212_test.csv"
+  # train_csv: "/home/tj/Research/foundation_model/dataset/train_test.csv"
+  # val_csv: "/home/tj/Research/foundation_model/dataset/val_test.csv"
+  # test_csv: "/home/tj/Research/foundation_model/dataset/test_test.csv"
+  image_column: "jpg_h1024_path"
+  local_prefix: "/nas/mediwhale_processed_data/"
+  force_rescan: false
+  # drnoon-image-transform 전처리 (augmentation 전 retinal crop). drnoon-ml 참고.
+  preprocessing:
+    use_drnoon_preprocess: true
+    drnoon_precrop: 0.4      # center crop 비율 (0.4 = 40% of shorter side)
+    drnoon_circle_mask: true # 원형 마스크 (retinal 원만 남김)
+
+training:
+  batch_size: 256
+  epochs: 100
+  num_workers: 4
+  # Overfitting 방지 설정
+  early_stopping:
+    enabled: true
+    patience: 10  # validation loss가 개선되지 않으면 10 epoch 후 중단
+    min_delta: 0.001  # 개선으로 간주할 최소 차이
+
+# dinov3: 기존 dinov3/configs/train/retinal_csv_finetune.yaml 사용
+# resume_from_teacher_chkpt: SSL 사전학습 시작 시 로드할 pretrained weight (비우면 랜덤 초기화)
+# 예: "../dinov3/pretrained_weights/dinov3-vitl16-pretrain-lvd1689m.pth" 또는 절대경로
+dinov3:
+  config: "/home/tj/Research/foundation_model/scripts/configs/retinal_csv_finetune.yaml"
+  opts: ["student.arch=vit_small"]  # ViT-L/16: vit_large. ViT-B는 vit_base, ViT-S는 vit_small
+  resume_from_teacher_chkpt: "facebook/dinov3-vits16-pretrain-lvd1689m"
+
+# lp: foundation.md 스펙 + RETFound train.sh 기반
+# model_arch: SSL(dinov3) 아키텍처와 일치해야 함 (vit_large+16 -> dinov3_vitl16, vit_small+16 -> dinov3_vits16)
+lp:
+  lp_warmup_epochs: 5          # N epoch 전까지 LP 실행 금지 (foundation.md)
+  min_val_loss_delta: 0.001    # val_loss 개선폭 이하면 LP 스킵 (foundation.md)
+  lp_trigger_every_k_improvements: 1
+  lp_max_triggers: 10
+  num_processes: null         # null=8 (SSL과 동일). 1이면 gpu_id로 특정 GPU 지정 가능
+  gpu_id: 1                # num_processes=1일 때 사용할 GPU 번호 (예: 3 → GPU 3만 사용). null=기본(0)
+  model_arch: "dinov3_vits16"  # SSL과 일치: vit_base→dinov3_vitb16, vit_large→dinov3_vitl16
+  tasks: ["dr", "amd", "glaucoma"]
+  nb_classes:
+    dr: 2
+    amd: 2
+    glaucoma: 2
+  batch_size: 24   # RETFound train.sh
+  epochs: 50       # RETFound train.sh
+  warmup_epochs: 10  # RETFound main_finetune default
+  retfound_pretrained: "RETFound_dinov2_meh"
+  dinov3_ckpt: "/home/tj/Research/foundation_model/output/dinov3_vits16_finetune_original/checkpoints/best.pt"
+
+seed: 0
+
+# MLflow (선택사항, mlflow 섹션 없으면 비활성화. pip install mlflow 필요)
+# drnoon-ml 서버 사용. null이면 MLFLOW_TRACKING_URI 환경변수 또는 로컬 ./mlruns
+mlflow:
+  tracking_uri: "https://registry.mediwhale.app/"  # null로 두면 env 또는 ./mlruns
+  experiment_name: "foundation_model"
+  run_name: null              # null이면 --run_name(예: run_default) 사용

@@ -50,6 +50,7 @@ def run_lp_retfound(
     use_drnoon_preprocess: bool = True,
     drnoon_precrop: float = 0.4,
     drnoon_circle_mask: bool = True,
+    gpu_id: int = None,
 ) -> Tuple[Dict, bool]:
     """
     태스크별 LP 실행. ImageFolder 생성 후 RETFound main_finetune 서브프로세스 호출.
@@ -62,7 +63,6 @@ def run_lp_retfound(
     nb_classes_map = nb_classes_map or {}
     summary = {}
     for task in tasks:
-        pbar = tqdm(desc=f"[LP] task={task}", total=1, unit="task", leave=True)
         nb = nb_classes_map.get(task, 2)
         tmp_csv = os.path.join(run_dir, "tmp", "lp_csv", task)
         os.makedirs(tmp_csv, exist_ok=True)
@@ -77,15 +77,14 @@ def run_lp_retfound(
 
         if n_train == 0:
             tqdm.write(f"[LP] task={task}: train 이미지 0개 (경로 미존재?). 스킵.")
-            pbar.update(1)
-            pbar.close()
             continue
 
         # RETFound가 output_dir/task 경로 사용 → output_dir에 task 포함하면 dr/dr 중복됨
         out_dir_root = os.path.join(run_dir, "lp_results", f"trigger_{trigger_idx}")
         os.makedirs(out_dir_root, exist_ok=True)
 
-        tqdm.write(f"[LP] task={task} (trigger_{trigger_idx}) num_processes={num_processes}")
+        gpu_info = f" gpu_id={gpu_id}" if num_processes == 1 and gpu_id is not None else ""
+        tqdm.write(f"[LP] task={task} (trigger_{trigger_idx}) num_processes={num_processes}{gpu_info}")
         base_args = [
             "--model", model,
             "--model_arch", model_arch,
@@ -98,6 +97,7 @@ def run_lp_retfound(
             "--warmup_epochs", str(warmup_epochs),
             "--output_dir", out_dir_root,
             "--task", task,
+            "--input_size", "224",  # RETFound 모델은 224를 기대함 (기본값 256과 다름)
         ]
         if use_drnoon_preprocess:
             base_args.extend([
@@ -133,6 +133,9 @@ def run_lp_retfound(
         env = os.environ.copy()
         for k in _DIST_ENV_KEYS:
             env.pop(k, None)
+        # 1 GPU 사용 시 특정 GPU 지정 (예: gpu_id=3 → GPU 3만 사용)
+        if num_processes == 1 and gpu_id is not None:
+            env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
         # 분산 실행 시 에러 traceback 파일로 저장 (ChildFailedError 원인 확인용)
         if num_processes > 1:
             err_file = os.path.join(run_dir, "tmp", f"lp_error_trigger{trigger_idx}_{task}.txt")
@@ -142,12 +145,7 @@ def run_lp_retfound(
             subprocess.run(cmd, cwd=str(RETFOUND_DIR), env=env, check=True)
         except subprocess.CalledProcessError as e:
             summary[task] = {"error": str(e)}
-            pbar.update(1)
-            pbar.close()
             continue
-
-        pbar.update(1)
-        pbar.close()
         log_file = os.path.join(out_dir_root, task, "log.txt")
         if os.path.exists(log_file):
             with open(log_file) as f:

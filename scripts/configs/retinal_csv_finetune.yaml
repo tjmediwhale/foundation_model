@@ -98,7 +98,7 @@ train:
 student:
   arch: vit_large  # Options: vit_small, vit_base, vit_large, vit_giant2
   patch_size: 16
-  drop_path_rate: 0.5  # 0.3→0.5: 과적합 완화 (Stochastic Depth 강화)
+  drop_path_rate: 0.4  # Overfitting 방지: 0.3 -> 0.4 (더 강한 regularization)
   layerscale: 1.0e-05
   # Pretrained weights: Hugging Face model name or local checkpoint path
   # Hugging Face models: facebook/dinov3-vits16-pretrain-lvd1689m, facebook/dinov3-vitb16-pretrain-lvd1689m, 
@@ -152,9 +152,9 @@ hrft:
 optim:
   epochs: 100  # Adjust based on your dataset size
   optimizer: adamw
-  weight_decay: 0.08   # 0.04→0.08: L2 정규화 강화
-  weight_decay_end: 0.5
-  lr: 0.0005  # 0.001→0.0005: 학습 속도 완화로 일반화 개선
+  weight_decay: 0.1   # Overfitting 방지: 0.04 -> 0.1 (더 강한 regularization)
+  weight_decay_end: 0.4
+  lr: 0.0005    # Overfitting 방지: 0.001 -> 0.0005 (더 작은 learning rate)
   warmup_epochs: 10
   min_lr: 1.0e-06
   schedule_trunc_extra: 0.0
@@ -182,7 +182,7 @@ crops:
   global_local_crop_pairs_ratios: 1.0
   gram_teacher_crops_size: null
   localcrops_subset_of_globalcrops: false
-  share_color_jitter: true   # false→true: color augmentation 강화
+  share_color_jitter: false   # DINOv3 ssl_default 기준
   horizontal_flips: true
   gram_teacher_no_distortions: false
   rgb_mean:

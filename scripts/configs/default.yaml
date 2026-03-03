@@ -18,16 +18,21 @@ data:
 
 training:
   batch_size: 256
-  epochs: 1000
+  epochs: 100
   num_workers: 4
+  # Overfitting 방지 설정
+  early_stopping:
+    enabled: true
+    patience: 10  # validation loss가 개선되지 않으면 10 epoch 후 중단
+    min_delta: 0.001  # 개선으로 간주할 최소 차이
 
 # dinov3: 기존 dinov3/configs/train/retinal_csv_finetune.yaml 사용
 # resume_from_teacher_chkpt: SSL 사전학습 시작 시 로드할 pretrained weight (비우면 랜덤 초기화)
 # 예: "../dinov3/pretrained_weights/dinov3-vitl16-pretrain-lvd1689m.pth" 또는 절대경로
 dinov3:
   config: "/home/tj/Research/foundation_model/scripts/configs/retinal_csv_finetune.yaml"
-  opts: ["student.arch=vit_base"]  # ViT-L/16: vit_large. ViT-B는 vit_base, ViT-S는 vit_small
-  resume_from_teacher_chkpt: "facebook/dinov3-vitb16-pretrain-lvd1689m"
+  opts: ["student.arch=vit_small"]  # ViT-L/16: vit_large. ViT-B는 vit_base, ViT-S는 vit_small
+  resume_from_teacher_chkpt: "facebook/dinov3-vits16-pretrain-lvd1689m"
 
 # lp: foundation.md 스펙 + RETFound train.sh 기반
 # model_arch: SSL(dinov3) 아키텍처와 일치해야 함 (vit_large+16 -> dinov3_vitl16, vit_small+16 -> dinov3_vits16)
@@ -37,7 +42,8 @@ lp:
   lp_trigger_every_k_improvements: 1
   lp_max_triggers: 10
   num_processes: null         # null=8 (SSL과 동일). SSL 완료 후 LP 실행 시 8 GPU 사용 가능.
-  model_arch: "dinov3_vitb16"  # SSL과 일치: vit_base→dinov3_vitb16, vit_large→dinov3_vitl16
+  gpu_id: 0 
+  model_arch: "dinov3_vits16"  # SSL과 일치: vit_base→dinov3_vitb16, vit_large→dinov3_vitl16
   tasks: ["dr", "amd", "glaucoma"]
   nb_classes:
     dr: 2

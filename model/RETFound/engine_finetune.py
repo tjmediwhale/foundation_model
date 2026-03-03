@@ -95,7 +95,11 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
     model.eval()
     true_onehot, pred_onehot, true_labels, pred_labels, pred_softmax = [], [], [], [], []
     
-    for batch in metric_logger.log_every(data_loader, 10, f'{mode}:'):
+    use_tqdm = (args is not None and getattr(args, "adaptation", None) == "lp" and misc.is_main_process())
+    n_batches = len(data_loader)
+    iterator = tqdm(data_loader, desc=f"[LP] {mode}", total=n_batches, disable=not use_tqdm) if use_tqdm else metric_logger.log_every(data_loader, 10, f'{mode}:')
+    
+    for batch in iterator:
         images, target = batch[0].to(device, non_blocking=True), batch[-1].to(device, non_blocking=True)
         target_onehot = F.one_hot(target.to(torch.int64), num_classes=num_class)
         
@@ -107,6 +111,8 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
         output_onehot = F.one_hot(output_label.to(torch.int64), num_classes=num_class)
         
         metric_logger.update(loss=loss.item())
+        if use_tqdm and hasattr(iterator, "set_postfix"):
+            iterator.set_postfix(loss=f"{loss.item():.4f}")
         true_onehot.extend(target_onehot.cpu().numpy())
         pred_onehot.extend(output_onehot.detach().cpu().numpy())
         true_labels.extend(target.cpu().numpy())
@@ -157,4 +163,15 @@ def evaluate(data_loader, model, device, args, epoch, mode, num_class, log_write
         cm.plot(cmap=plt.cm.Blues, number_label=True, normalized=True, plot_lib="matplotlib")
         plt.savefig(os.path.join(args.output_dir, args.task, 'confusion_matrix_test.jpg'), dpi=600, bbox_inches='tight')
     
-    return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, score
+    # 추가 메트릭을 딕셔너리에 포함하여 반환
+    stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+    stats.update({
+        "f1": float(f1),
+        "roc_auc": float(roc_auc),
+        "kappa": float(kappa),
+        "accuracy": float(accuracy),
+        "precision": float(precision),
+        "recall": float(recall),
+    })
+    
+    return stats, score
